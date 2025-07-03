@@ -99,7 +99,36 @@ class _CalendarPageState extends State<CalendarPage> {
       selectedDate = selectedDate.subtract(const Duration(days: 1));
     });
   }
+  void _editDesigners() async {
+    final controller = TextEditingController(text: designers.join(", "));
+    final result = await showDialog<bool>(
+      context: context,
+      builder: (_) {
+        return AlertDialog(
+          title: const Text("編輯設計師列表"),
+          content: TextField(
+            controller: controller,
+            decoration: const InputDecoration(
+              hintText: '用逗號分隔（如 A, B, C）',
+            ),
+          ),
+          actions: [
+            TextButton(onPressed: () => Navigator.pop(context, false), child: const Text("取消")),
+            TextButton(onPressed: () => Navigator.pop(context, true), child: const Text("儲存")),
+          ],
+        );
+      },
+    );
 
+    if (result == true) {
+      final List<String> updated = controller.text.split(',').map((e) => e.trim()).where((e) => e.isNotEmpty).toList();
+      setState(() {
+        designers
+          ..clear()
+          ..addAll(updated);
+      });
+    }
+  }
   Future<void> _editAppointment(String designer, {Appointment? existing}) async {
     final nameController = TextEditingController(text: existing?.customer ?? '');
     final startController = TextEditingController(
@@ -213,93 +242,93 @@ class _CalendarPageState extends State<CalendarPage> {
         actions: [
           IconButton(onPressed: _prevDay, icon: const Icon(Icons.chevron_left)),
           IconButton(onPressed: _nextDay, icon: const Icon(Icons.chevron_right)),
+          IconButton(onPressed: _editDesigners, icon: const Icon(Icons.edit)),
         ],
       ),
-      body: SingleChildScrollView(
-        scrollDirection: Axis.horizontal,
-        child: SingleChildScrollView(
-          scrollDirection: Axis.vertical,
-          child: SizedBox(
-            width: timeColumnWidth + contentWidth,
-            height: contentHeight + 40,
-            child: Stack(
-              children: [
-                Positioned.fill(
-                  child: Row(
-                    children: [
-                      Column(
-                        children: [
-                          Container(
+      body: InteractiveViewer(
+        constrained: false,
+        minScale: 0.5,
+        maxScale: 2.5,
+        child: SizedBox(
+          width: timeColumnWidth + contentWidth,
+          height: contentHeight + 40,
+          child: Stack(
+            children: [
+              Positioned.fill(
+                child: Row(
+                  children: [
+                    Column(
+                      children: [
+                        Container(
+                          width: timeColumnWidth,
+                          height: 40,
+                          decoration: BoxDecoration(border: Border.all(color: Colors.grey)),
+                          alignment: Alignment.center,
+                          child: const Text('時間', style: TextStyle(fontWeight: FontWeight.bold)),
+                        ),
+                        ...List.generate((endHour - startHour).toInt(), (i) {
+                          final hour = startHour + i;
+                          final timeLabel = '${hour.toInt().toString().padLeft(2, '0')}:00';
+                          return Container(
                             width: timeColumnWidth,
-                            height: 40,
-                            decoration: BoxDecoration(border: Border.all(color: Colors.grey)),
+                            height: hourHeight,
                             alignment: Alignment.center,
-                            child: const Text('時間', style: TextStyle(fontWeight: FontWeight.bold)),
-                          ),
-                          ...List.generate((endHour - startHour).toInt(), (i) {
-                            final hour = startHour + i;
-                            final timeLabel = '${hour.toInt().toString().padLeft(2, '0')}:00';
-                            return Container(
-                              width: timeColumnWidth,
-                              height: hourHeight,
+                            decoration: BoxDecoration(border: Border.all(color: Colors.grey)),
+                            child: Text(timeLabel),
+                          );
+                        })
+                      ],
+                    ),
+                    ...designers.map((designer) {
+                      return GestureDetector(
+                        onTap: () => _editAppointment(designer),
+                        child: Column(
+                          children: [
+                            Container(
+                              width: designerColumnWidth,
+                              height: 40,
                               alignment: Alignment.center,
                               decoration: BoxDecoration(border: Border.all(color: Colors.grey)),
-                              child: Text(timeLabel),
-                            );
-                          })
-                        ],
-                      ),
-                      ...designers.map((designer) {
-                        return GestureDetector(
-                          onTap: () => _editAppointment(designer),
-                          child: Column(
-                            children: [
-                              Container(
+                              child: Text(designer, style: const TextStyle(fontWeight: FontWeight.bold)),
+                            ),
+                            ...List.generate((endHour - startHour).toInt(), (_) {
+                              return Container(
                                 width: designerColumnWidth,
-                                height: 40,
-                                alignment: Alignment.center,
+                                height: hourHeight,
                                 decoration: BoxDecoration(border: Border.all(color: Colors.grey)),
-                                child: Text(designer, style: const TextStyle(fontWeight: FontWeight.bold)),
-                              ),
-                              ...List.generate((endHour - startHour).toInt(), (_) {
-                                return Container(
-                                  width: designerColumnWidth,
-                                  height: hourHeight,
-                                  decoration: BoxDecoration(border: Border.all(color: Colors.grey)),
-                                );
-                              }),
-                            ],
-                          ),
-                        );
-                      })
-                    ],
-                  ),
-                ),
-                ...appointments.map((a) {
-                  final left = timeColumnWidth + designers.indexOf(a.designer) * designerColumnWidth;
-                  final top = 40 + (_timeToDouble(a.start) - startHour) * hourHeight;
-                  final height = (_timeToDouble(a.end) - _timeToDouble(a.start)) * hourHeight;
-                  return Positioned(
-                    top: top,
-                    left: left,
-                    child: GestureDetector(
-                      onTap: () => _editAppointment(a.designer, existing: a),
-                      child: Container(
-                        width: designerColumnWidth,
-                        height: height,
-                        color: Colors.lightBlueAccent.withOpacity(0.6),
-                        alignment: Alignment.center,
-                        child: Text(
-                          a.customer,
-                          textAlign: TextAlign.center,
-                          style: const TextStyle(fontSize: 14, fontWeight: FontWeight.bold),
+                              );
+                            }),
+                          ],
                         ),
+                      );
+                    })
+                  ],
+                ),
+              ),
+              ...appointments.map((a) {
+                final left = timeColumnWidth + designers.indexOf(a.designer) * designerColumnWidth;
+                final top = 40 + (_timeToDouble(a.start) - startHour) * hourHeight;
+                final height = (_timeToDouble(a.end) - _timeToDouble(a.start)) * hourHeight;
+                return Positioned(
+                  top: top,
+                  left: left,
+                  child: GestureDetector(
+                    onTap: () => _editAppointment(a.designer, existing: a),
+                    child: Container(
+                      width: designerColumnWidth,
+                      height: height,
+                      color: Colors.lightBlueAccent.withOpacity(0.6),
+                      alignment: Alignment.center,
+                      child: Text(
+                        a.customer,
+                        textAlign: TextAlign.center,
+                        style: const TextStyle(fontSize: 14, fontWeight: FontWeight.bold),
                       ),
                     ),
-                  );
-                })
-              ],
-            ),
+                  ),
+                );
+              })
+            ],
           ),
         ),
       ),
