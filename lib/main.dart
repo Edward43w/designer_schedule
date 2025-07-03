@@ -1,7 +1,14 @@
 import 'package:flutter/material.dart';
 import 'package:intl/intl.dart';
+import 'package:cloud_firestore/cloud_firestore.dart';
+import 'package:firebase_core/firebase_core.dart';
+import 'dart:async';
 
-void main() => runApp(const MyApp());
+void main() async {
+  WidgetsFlutterBinding.ensureInitialized();
+  await Firebase.initializeApp();
+  runApp(const MyApp());
+}
 
 class MyApp extends StatelessWidget {
   const MyApp({super.key});
@@ -16,18 +23,12 @@ class MyApp extends StatelessWidget {
   }
 }
 
-class LoginPage extends StatefulWidget {
+
+
+class LoginPage extends StatelessWidget {
   const LoginPage({super.key});
 
-  @override
-  State<LoginPage> createState() => _LoginPageState();
-}
-
-class _LoginPageState extends State<LoginPage> {
-  final _emailController = TextEditingController();
-  final _passwordController = TextEditingController();
-
-  void _login() {
+  void _enter(BuildContext context) {
     Navigator.pushReplacement(
       context,
       MaterialPageRoute(builder: (_) => const CalendarPage()),
@@ -37,25 +38,60 @@ class _LoginPageState extends State<LoginPage> {
   @override
   Widget build(BuildContext context) {
     return Scaffold(
-      body: Padding(
-        padding: const EdgeInsets.all(24.0),
-        child: Column(
-          mainAxisAlignment: MainAxisAlignment.center,
-          children: [
-            const Text('設計師登入', style: TextStyle(fontSize: 24)),
-            const SizedBox(height: 16),
-            TextField(
-              controller: _emailController,
-              decoration: const InputDecoration(labelText: 'Email'),
-            ),
-            TextField(
-              controller: _passwordController,
-              obscureText: true,
-              decoration: const InputDecoration(labelText: '密碼'),
-            ),
-            const SizedBox(height: 20),
-            ElevatedButton(onPressed: _login, child: const Text('登入')),
-          ],
+      backgroundColor: Colors.black, // 背景黑色
+      body: Center(
+        child: Padding(
+          padding: const EdgeInsets.symmetric(horizontal: 24.0),
+          child: Column(
+            mainAxisAlignment: MainAxisAlignment.center,
+            children: [
+              // 中文名稱
+              const Text(
+                '溢  聖  慈',
+                style: TextStyle(
+                  fontSize: 40,
+                  color: Colors.white,
+                  letterSpacing: 8,
+                  fontWeight: FontWeight.bold,
+                ),
+              ),
+              const SizedBox(height: 8),
+              // 分隔線
+              Container(
+                height: 2,
+                width: 200,
+                color: Colors.white,
+              ),
+              const SizedBox(height: 8),
+              // 英文名稱
+              const Text(
+                'ISSUANCE',
+                style: TextStyle(
+                  fontSize: 30,
+                  color: Colors.white,
+                  letterSpacing: 6,
+                ),
+              ),
+              const SizedBox(height: 50),
+              ElevatedButton(
+                onPressed: () => _enter(context),
+                style: ElevatedButton.styleFrom(
+                  backgroundColor: const Color.fromARGB(255, 51, 113, 247), 
+                  padding: const EdgeInsets.symmetric(horizontal: 30, vertical: 12),
+                  shape: RoundedRectangleBorder(
+                    borderRadius: BorderRadius.circular(24),
+                  ),
+                ),
+                child: const Text(
+                  '進入排程',
+                  style: TextStyle(
+                    fontSize: 25,
+                    color: Colors.white,
+                  ),
+                ),
+              ),
+            ],
+          ),
         ),
       ),
     );
@@ -74,6 +110,24 @@ class Appointment {
     required this.customer,
     required this.designer,
   });
+
+  Map<String, dynamic> toJson() => {
+        'start': '${start.hour}:${start.minute}',
+        'end': '${end.hour}:${end.minute}',
+        'customer': customer,
+        'designer': designer,
+      };
+
+  static Appointment fromJson(Map<String, dynamic> json) {
+    final startParts = (json['start'] as String).split(':');
+    final endParts = (json['end'] as String).split(':');
+    return Appointment(
+      start: TimeOfDay(hour: int.parse(startParts[0]), minute: int.parse(startParts[1])),
+      end: TimeOfDay(hour: int.parse(endParts[0]), minute: int.parse(endParts[1])),
+      customer: json['customer'],
+      designer: json['designer'],
+    );
+  }
 }
 
 class CalendarPage extends StatefulWidget {
@@ -85,50 +139,73 @@ class CalendarPage extends StatefulWidget {
 
 class _CalendarPageState extends State<CalendarPage> {
   DateTime selectedDate = DateTime.now();
-  final List<String> designers = ['A', 'V', 'E', 'G', 'Q', 'J', 'H', 'P'];
-  final Map<String, List<Appointment>> dailyAppointments = {};
+  List<String> designers = [];
+  Map<String, List<Appointment>> dailyAppointments = {};
+
+  final FirebaseFirestore firestore = FirebaseFirestore.instance;
+  late StreamSubscription<DocumentSnapshot> _designerSub;
+  StreamSubscription<DocumentSnapshot>? _appointmentSub;
+
+  @override
+  void initState() {
+    super.initState();
+    _listenToDesignerUpdates();
+    _listenToAppointmentUpdates();
+  }
 
   void _nextDay() {
     setState(() {
       selectedDate = selectedDate.add(const Duration(days: 1));
     });
+    _listenToAppointmentUpdates();
   }
 
   void _prevDay() {
     setState(() {
       selectedDate = selectedDate.subtract(const Duration(days: 1));
     });
+    _listenToAppointmentUpdates();
   }
-  void _editDesigners() async {
-    final controller = TextEditingController(text: designers.join(", "));
-    final result = await showDialog<bool>(
-      context: context,
-      builder: (_) {
-        return AlertDialog(
-          title: const Text("編輯設計師列表"),
-          content: TextField(
-            controller: controller,
-            decoration: const InputDecoration(
-              hintText: '用逗號分隔（如 A, B, C）',
-            ),
-          ),
-          actions: [
-            TextButton(onPressed: () => Navigator.pop(context, false), child: const Text("取消")),
-            TextButton(onPressed: () => Navigator.pop(context, true), child: const Text("儲存")),
-          ],
-        );
-      },
-    );
 
-    if (result == true) {
-      final List<String> updated = controller.text.split(',').map((e) => e.trim()).where((e) => e.isNotEmpty).toList();
-      setState(() {
-        designers
-          ..clear()
-          ..addAll(updated);
-      });
-    }
+  void _listenToDesignerUpdates() {
+    _designerSub = firestore.collection('settings').doc('designers').snapshots().listen((snapshot) {
+      if (snapshot.exists) {
+        final data = snapshot.data();
+        if (data != null && data['list'] is List) {
+          setState(() {
+            designers = List<String>.from(data['list']);
+          });
+        }
+      }
+    });
   }
+
+  void _listenToAppointmentUpdates() {
+    final key = DateFormat('yyyy-MM-dd').format(selectedDate);
+    _appointmentSub?.cancel();
+    _appointmentSub = firestore.collection('appointments').doc(key).snapshots().listen((snapshot) {
+      if (snapshot.exists) {
+        final data = snapshot.data();
+        final list = (data?['list'] as List<dynamic>?)?.map((e) => Appointment.fromJson(e as Map<String, dynamic>)).toList();
+        if (list != null) {
+          setState(() {
+            dailyAppointments[key] = list;
+          });
+        }
+      }
+    });
+  }
+
+  Future<void> _updateDesigners(List<String> updatedList) async {
+    await firestore.collection('settings').doc('designers').set({'list': updatedList});
+  }
+
+  Future<void> _saveAppointments(String key) async {
+    final list = dailyAppointments[key] ?? [];
+    final jsonList = list.map((e) => e.toJson()).toList();
+    await firestore.collection('appointments').doc(key).set({'list': jsonList});
+  }
+
   Future<void> _editAppointment(String designer, {Appointment? existing}) async {
     final nameController = TextEditingController(text: existing?.customer ?? '');
     final startController = TextEditingController(
@@ -173,6 +250,9 @@ class _CalendarPageState extends State<CalendarPage> {
       },
     );
 
+    final key = DateFormat('yyyy-MM-dd').format(selectedDate);
+    final list = dailyAppointments[key] ?? [];
+
     if (result == 'save') {
       try {
         final name = nameController.text;
@@ -186,13 +266,10 @@ class _CalendarPageState extends State<CalendarPage> {
           throw Exception();
         }
 
-        final key = DateFormat('yyyy-MM-dd').format(selectedDate);
-        final list = dailyAppointments[key] ?? [];
-
         bool hasConflict = list.any((other) {
           if (existing != null && identical(other, existing)) return false;
           return other.designer == designer &&
-            !(_timeToDouble(end) <= _timeToDouble(other.start) || _timeToDouble(start) >= _timeToDouble(other.end));
+              !(_timeToDouble(end) <= _timeToDouble(other.start) || _timeToDouble(start) >= _timeToDouble(other.end));
         });
 
         if (hasConflict) {
@@ -203,24 +280,59 @@ class _CalendarPageState extends State<CalendarPage> {
         }
 
         setState(() {
-          if (existing != null) {
-            list.remove(existing);
-          }
+          if (existing != null) list.remove(existing);
           list.add(Appointment(start: start, end: end, customer: name, designer: designer));
           dailyAppointments[key] = list;
         });
+        await _saveAppointments(key);
       } catch (_) {
         ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text("請輸入正確時間格式 (09:00 ~ 19:00)")));
       }
     } else if (result == 'delete' && existing != null) {
-      final key = DateFormat('yyyy-MM-dd').format(selectedDate);
       setState(() {
-        dailyAppointments[key]?.remove(existing);
+        list.remove(existing);
+        dailyAppointments[key] = list;
       });
+      await _saveAppointments(key);
+    }
+  }
+
+  void _editDesigners() async {
+    final controller = TextEditingController(text: designers.join(', '));
+    final result = await showDialog<bool>(
+      context: context,
+      builder: (_) {
+        return AlertDialog(
+          title: const Text("編輯設計師列表"),
+          content: TextField(
+            controller: controller,
+            decoration: const InputDecoration(hintText: '用逗號分隔（如 A, B, C）'),
+          ),
+          actions: [
+            TextButton(onPressed: () => Navigator.pop(context, false), child: const Text("取消")),
+            TextButton(onPressed: () => Navigator.pop(context, true), child: const Text("儲存")),
+          ],
+        );
+      },
+    );
+
+    if (result == true) {
+      final updated = controller.text.split(',').map((e) => e.trim()).where((e) => e.isNotEmpty).toList();
+      setState(() {
+        designers = updated;
+      });
+      await _updateDesigners(updated);
     }
   }
 
   double _timeToDouble(TimeOfDay t) => t.hour + t.minute / 60.0;
+
+  @override
+  void dispose() {
+    _designerSub.cancel();
+    _appointmentSub?.cancel();
+    super.dispose();
+  }
 
   @override
   Widget build(BuildContext context) {
@@ -232,7 +344,6 @@ class _CalendarPageState extends State<CalendarPage> {
 
     final double contentHeight = (endHour - startHour) * hourHeight;
     final double contentWidth = designerColumnWidth * designers.length;
-
     final String key = DateFormat('yyyy-MM-dd').format(selectedDate);
     final appointments = dailyAppointments[key] ?? [];
 
