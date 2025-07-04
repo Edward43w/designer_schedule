@@ -1,4 +1,4 @@
-import 'package:flutter/material.dart';
+import 'package:flutter/material.dart'; 
 import 'package:intl/intl.dart';
 import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:firebase_core/firebase_core.dart';
@@ -22,8 +22,6 @@ class MyApp extends StatelessWidget {
     );
   }
 }
-
-
 
 class LoginPage extends StatelessWidget {
   const LoginPage({super.key});
@@ -140,6 +138,69 @@ class Appointment {
   }
 }
 
+class _AppointmentLayout {
+  final Appointment appointment;
+  final int column;
+  int columnCount;
+  _AppointmentLayout(this.appointment, this.column, this.columnCount);
+}
+
+List<_AppointmentLayout> layoutAppointments(List<Appointment> appointments, double Function(TimeOfDay) timeToDouble) {
+  // 按開始時間排序
+  appointments.sort((a, b) => timeToDouble(a.start).compareTo(timeToDouble(b.start)));
+
+  List<_AppointmentLayout> layouts = [];
+  List<List<Appointment>> clusters = [];
+
+  for (final a in appointments) {
+    bool placed = false;
+    // 找有重疊的 cluster
+    for (final cluster in clusters) {
+      if (cluster.any((b) => _isOverlap(a, b, timeToDouble))) {
+        cluster.add(a);
+        placed = true;
+        break;
+      }
+    }
+    if (!placed) {
+      clusters.add([a]);
+    }
+  }
+
+  // 每個 cluster 都再做欄位分配
+  for (final cluster in clusters) {
+    // 按照開始時間排序
+    cluster.sort((a, b) => timeToDouble(a.start).compareTo(timeToDouble(b.start)));
+    List<List<Appointment>> columns = [];
+    for (final a in cluster) {
+      bool placed = false;
+      for (int i = 0; i < columns.length; i++) {
+        if (!_isOverlap(a, columns[i].last, timeToDouble)) {
+          columns[i].add(a);
+          layouts.add(_AppointmentLayout(a, i, columns.length));
+          placed = true;
+          break;
+        }
+      }
+      if (!placed) {
+        columns.add([a]);
+        layouts.add(_AppointmentLayout(a, columns.length - 1, columns.length));
+      }
+    }
+    // 最終同 cluster 內都要共用最大 columnCount
+    int maxColumnCount = columns.length;
+    for (final l in layouts.where((l) => cluster.contains(l.appointment))) {
+      l.columnCount = maxColumnCount;
+    }
+  }
+  return layouts;
+}
+
+
+bool _isOverlap(Appointment a, Appointment b, double Function(TimeOfDay) timeToDouble) {
+  return timeToDouble(a.start) < timeToDouble(b.end) && timeToDouble(a.end) > timeToDouble(b.start);
+}
+
 class CalendarPage extends StatefulWidget {
   const CalendarPage({super.key});
 
@@ -170,7 +231,6 @@ class _CalendarPageState extends State<CalendarPage> {
   ];
 
   Color _getColorForCustomer(String name) {
-    // 用客人名的 hashCode 對顏色清單取餘數
     final idx = name.hashCode.abs() % _customerColors.length;
     return _customerColors[idx].withOpacity(0.7);
   }
@@ -228,8 +288,6 @@ class _CalendarPageState extends State<CalendarPage> {
   void _onTapTimeSlot(TimeOfDay tapTime, String designer) async {
     final String key = DateFormat('yyyy-MM-dd').format(selectedDate);
     final appointments = dailyAppointments[key] ?? [];
-
-    // 這裡找所有此時間有涵蓋的預約
     final overlapped = appointments.where((a) {
       if (a.designer != designer) return false;
       final start = _timeToDouble(a.start);
@@ -240,25 +298,9 @@ class _CalendarPageState extends State<CalendarPage> {
 
     if (overlapped.isEmpty) {
       await _editAppointment(designer, existing: null);
-    } else if (overlapped.length == 1) {
-      await _editAppointment(designer, existing: overlapped.first);
-    } else {
-      final picked = await showDialog<Appointment>(
-        context: context,
-        builder: (context) => SimpleDialog(
-          title: const Text("選擇要編輯的預約"),
-          children: overlapped.map((a) => SimpleDialogOption(
-            onPressed: () => Navigator.pop(context, a),
-            child: Text('${a.customer} ${a.service}  ${a.start.format(context)}-${a.end.format(context)}'),
-          )).toList(),
-        ),
-      );
-      if (picked != null) {
-        await _editAppointment(designer, existing: picked);
-      }
     }
+    // overlapped 不為空時，不需要做任何事
   }
-
 
   Future<void> _updateDesigners(List<String> updatedList) async {
     await firestore.collection('settings').doc('designers').set({'list': updatedList});
@@ -270,13 +312,25 @@ class _CalendarPageState extends State<CalendarPage> {
     await firestore.collection('appointments').doc(key).set({'list': jsonList});
   }
 
+  String pad12(TimeOfDay t) {
+    int hour = t.hour % 12 == 0 ? 12 : t.hour % 12;
+    return hour.toString().padLeft(2, '0') + t.minute.toString().padLeft(2, '0');
+  }
+  String formatTimeRange(TimeOfDay start, TimeOfDay end) {
+    return "${pad12(start)}~${pad12(end)}";
+  }
+
+  String formatTime12(TimeOfDay t) {
+    int hour = t.hour % 12 == 0 ? 12 : t.hour % 12;
+    return '${hour.toString().padLeft(2, '0')}:${t.minute.toString().padLeft(2, '0')}';
+  }
   Future<void> _editAppointment(String designer, {Appointment? existing}) async {
     final nameController = TextEditingController(text: existing?.customer ?? '');
     final startController = TextEditingController(
-      text: existing != null ? '${existing.start.hour.toString().padLeft(2, '0')}${existing.start.minute.toString().padLeft(2, '0')}' : '',
+      text: existing != null ? formatTime12(existing.start) : '',
     );
     final endController = TextEditingController(
-      text: existing != null ? '${existing.end.hour.toString().padLeft(2, '0')}${existing.end.minute.toString().padLeft(2, '0')}' : '',
+      text: existing != null ? formatTime12(existing.end) : '',
     );
     final serviceController = TextEditingController(text: existing?.service ?? '');
 
@@ -288,6 +342,14 @@ class _CalendarPageState extends State<CalendarPage> {
           content: Column(
             mainAxisSize: MainAxisSize.min,
             children: [
+              if (existing != null)
+                Padding(
+                  padding: const EdgeInsets.only(bottom: 8.0),
+                  child: Text(
+                    formatTimeRange(existing.start, existing.end),
+                    style: const TextStyle(fontSize: 16, fontWeight: FontWeight.bold),
+                  ),
+                ),
               TextField(
                 controller: nameController,
                 decoration: const InputDecoration(labelText: '顧客名稱'),
@@ -341,19 +403,6 @@ class _CalendarPageState extends State<CalendarPage> {
           throw Exception();
         }
 
-        // bool hasConflict = list.any((other) {
-        //   if (existing != null && identical(other, existing)) return false;
-        //   return other.designer == designer &&
-        //       !(_timeToDouble(end) <= _timeToDouble(other.start) || _timeToDouble(start) >= _timeToDouble(other.end));
-        // });
-
-        // if (hasConflict) {
-        //   ScaffoldMessenger.of(context).showSnackBar(
-        //     const SnackBar(content: Text('該時段已有預約，請選擇其他時間')),
-        //   );
-        //   return;
-        // }
-
         setState(() {
           if (existing != null) list.remove(existing);
           list.add(Appointment(
@@ -380,7 +429,7 @@ class _CalendarPageState extends State<CalendarPage> {
 
   String _formattedHourLabel(int hour) {
     final adjustedHour = hour % 12 == 0 ? 12 : hour % 12;
-    return '${adjustedHour.toString().padLeft(2, '0')}:00';
+    return '${adjustedHour.toString().padLeft(2, '0')}:30';
   }
 
   void _editDesigners() async {
@@ -420,42 +469,28 @@ class _CalendarPageState extends State<CalendarPage> {
     super.dispose();
   }
 
-  Widget _buildAppointmentBox(Appointment a, double top, double height, double designerColumnWidth, double timeColumnWidth) {
-    return Positioned(
-      top: top,
-      left: timeColumnWidth + designers.indexOf(a.designer) * designerColumnWidth,
-      child: GestureDetector(
-        //onTap: () => _editAppointment(a.designer, existing: a),
-        //onTap: () => _onTapTimeSlot(a.start, a.designer),
-        onTapDown: (details) {
-          // 算出這個預約 box 的 tap Y 在全 Stack 的座標
-          double globalY = top + details.localPosition.dy;
-          // Stack 上面是 40 的 header
-          double tapHour = 9 + (globalY - 40) / 80; // 假設 hourHeight = 80
-          int hour = tapHour.floor();
-          int minute = ((tapHour - hour) * 60).round();
-          final tapTime = TimeOfDay(hour: hour, minute: minute);
-          _onTapTimeSlot(tapTime, a.designer);
-        },
-        child: Container(
-          width: designerColumnWidth,
-          height: height,
+  Widget _buildAppointmentBox(Appointment a, double width, double height, double top) {
+    return GestureDetector(
+      onTap: () => _editAppointment(a.designer, existing: a),
+      child: Container(
+        width: width,
+        height: height,
+        decoration: BoxDecoration(
           color: _getColorForCustomer(a.customer),
-          alignment: Alignment.center,
-          padding: const EdgeInsets.symmetric(horizontal: 4),
-          child: Column(
-            mainAxisAlignment: MainAxisAlignment.center,
-            children: [
-              Text(a.customer, style: const TextStyle(fontSize: 14, fontWeight: FontWeight.bold), textAlign: TextAlign.center),
-              Text(a.service, style: const TextStyle(fontSize: 12), textAlign: TextAlign.center),
-            ],
-          ),
+          borderRadius: BorderRadius.circular(8),
+        ),
+        alignment: Alignment.center,
+        padding: const EdgeInsets.symmetric(horizontal: 4),
+        child: Column(
+          mainAxisAlignment: MainAxisAlignment.center,
+          children: [
+            Text(a.customer, style: const TextStyle(fontSize: 14, fontWeight: FontWeight.bold), textAlign: TextAlign.center),
+            Text(a.service, style: const TextStyle(fontSize: 12), textAlign: TextAlign.center),
+          ],
         ),
       ),
     );
   }
-
-
 
   @override
   Widget build(BuildContext context) {
@@ -524,7 +559,6 @@ class _CalendarPageState extends State<CalendarPage> {
                             child: Text(designer, style: const TextStyle(fontWeight: FontWeight.bold)),
                           ),
                           ...List.generate((endHour - startHour).toInt() * 2, (i) {
-                            // 這裡每格 30 分鐘，i=0->09:00, i=1->09:30, ...
                             final int hour = startHour.toInt() + (i ~/ 2);
                             final int minute = (i % 2) * 30;
                             final tapTime = TimeOfDay(hour: hour, minute: minute);
@@ -543,11 +577,27 @@ class _CalendarPageState extends State<CalendarPage> {
                   ],
                 ),
               ),
-              ...appointments.map((a) {
-                final top = 40 + (_timeToDouble(a.start) - startHour) * hourHeight;
-                final height = (_timeToDouble(a.end) - _timeToDouble(a.start)) * hourHeight;
-                return _buildAppointmentBox(a, top, height, designerColumnWidth, timeColumnWidth);
-              })
+              // ---- 這裡改成左右平鋪重疊預約 ----
+              ...designers.asMap().entries.expand((entry) {
+                final designerIndex = entry.key;
+                final designer = entry.value;
+                final designerAppointments = appointments.where((a) => a.designer == designer).toList();
+                final layouts = layoutAppointments(designerAppointments, _timeToDouble);
+                return layouts.map((layout) {
+                  final a = layout.appointment;
+                  final column = layout.column;
+                  final columnCount = layout.columnCount;
+                  final width = designerColumnWidth / columnCount;
+                  final left = timeColumnWidth + designerIndex * designerColumnWidth + column * width;
+                  final top = 40 + (_timeToDouble(a.start) - startHour) * hourHeight;
+                  final height = (_timeToDouble(a.end) - _timeToDouble(a.start)) * hourHeight;
+                  return Positioned(
+                    top: top,
+                    left: left,
+                    child: _buildAppointmentBox(a, width, height, top),
+                  );
+                });
+              }),
             ],
           ),
         ),
