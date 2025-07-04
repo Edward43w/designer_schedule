@@ -98,34 +98,44 @@ class LoginPage extends StatelessWidget {
   }
 }
 
+int adjustHour(int rawHour) {
+  // 若輸入 01 ~ 06 視為 13 ~ 18，代表「下午」
+  if (rawHour >= 1 && rawHour <= 6) return rawHour + 12;
+  return rawHour;
+}
+
 class Appointment {
   final TimeOfDay start;
   final TimeOfDay end;
   final String customer;
   final String designer;
+  final String service;
 
   Appointment({
     required this.start,
     required this.end,
     required this.customer,
     required this.designer,
+    required this.service,
   });
 
   Map<String, dynamic> toJson() => {
-        'start': '${start.hour}:${start.minute}',
-        'end': '${end.hour}:${end.minute}',
+        'start': '${start.hour.toString().padLeft(2, '0')}${start.minute.toString().padLeft(2, '0')}',
+        'end': '${end.hour.toString().padLeft(2, '0')}${end.minute.toString().padLeft(2, '0')}',
         'customer': customer,
         'designer': designer,
+        'service': service,
       };
 
   static Appointment fromJson(Map<String, dynamic> json) {
-    final startParts = (json['start'] as String).split(':');
-    final endParts = (json['end'] as String).split(':');
+    final startStr = json['start'] as String;
+    final endStr = json['end'] as String;
     return Appointment(
-      start: TimeOfDay(hour: int.parse(startParts[0]), minute: int.parse(startParts[1])),
-      end: TimeOfDay(hour: int.parse(endParts[0]), minute: int.parse(endParts[1])),
+      start: TimeOfDay(hour: int.parse(startStr.substring(0, 2)), minute: int.parse(startStr.substring(2, 4))),
+      end: TimeOfDay(hour: int.parse(endStr.substring(0, 2)), minute: int.parse(endStr.substring(2, 4))),
       customer: json['customer'],
       designer: json['designer'],
+      service: json['service'],
     );
   }
 }
@@ -145,6 +155,25 @@ class _CalendarPageState extends State<CalendarPage> {
   final FirebaseFirestore firestore = FirebaseFirestore.instance;
   late StreamSubscription<DocumentSnapshot> _designerSub;
   StreamSubscription<DocumentSnapshot>? _appointmentSub;
+
+  final List<Color> _customerColors = [
+    Colors.lightBlueAccent,
+    Colors.amber,
+    Colors.lightGreen,
+    Colors.pinkAccent,
+    Colors.deepOrangeAccent,
+    Colors.purpleAccent,
+    Colors.cyan,
+    Colors.lime,
+    Colors.teal,
+    Colors.indigoAccent,
+  ];
+
+  Color _getColorForCustomer(String name) {
+    // 用客人名的 hashCode 對顏色清單取餘數
+    final idx = name.hashCode.abs() % _customerColors.length;
+    return _customerColors[idx].withOpacity(0.7);
+  }
 
   @override
   void initState() {
@@ -196,6 +225,41 @@ class _CalendarPageState extends State<CalendarPage> {
     });
   }
 
+  void _onTapTimeSlot(TimeOfDay tapTime, String designer) async {
+    final String key = DateFormat('yyyy-MM-dd').format(selectedDate);
+    final appointments = dailyAppointments[key] ?? [];
+
+    // 這裡找所有此時間有涵蓋的預約
+    final overlapped = appointments.where((a) {
+      if (a.designer != designer) return false;
+      final start = _timeToDouble(a.start);
+      final end = _timeToDouble(a.end);
+      final tap = _timeToDouble(tapTime);
+      return tap >= start && tap < end;
+    }).toList();
+
+    if (overlapped.isEmpty) {
+      await _editAppointment(designer, existing: null);
+    } else if (overlapped.length == 1) {
+      await _editAppointment(designer, existing: overlapped.first);
+    } else {
+      final picked = await showDialog<Appointment>(
+        context: context,
+        builder: (context) => SimpleDialog(
+          title: const Text("選擇要編輯的預約"),
+          children: overlapped.map((a) => SimpleDialogOption(
+            onPressed: () => Navigator.pop(context, a),
+            child: Text('${a.customer} ${a.service}  ${a.start.format(context)}-${a.end.format(context)}'),
+          )).toList(),
+        ),
+      );
+      if (picked != null) {
+        await _editAppointment(designer, existing: picked);
+      }
+    }
+  }
+
+
   Future<void> _updateDesigners(List<String> updatedList) async {
     await firestore.collection('settings').doc('designers').set({'list': updatedList});
   }
@@ -209,17 +273,18 @@ class _CalendarPageState extends State<CalendarPage> {
   Future<void> _editAppointment(String designer, {Appointment? existing}) async {
     final nameController = TextEditingController(text: existing?.customer ?? '');
     final startController = TextEditingController(
-      text: existing != null ? '${existing.start.hour.toString().padLeft(2, '0')}:${existing.start.minute.toString().padLeft(2, '0')}' : '',
+      text: existing != null ? '${existing.start.hour.toString().padLeft(2, '0')}${existing.start.minute.toString().padLeft(2, '0')}' : '',
     );
     final endController = TextEditingController(
-      text: existing != null ? '${existing.end.hour.toString().padLeft(2, '0')}:${existing.end.minute.toString().padLeft(2, '0')}' : '',
+      text: existing != null ? '${existing.end.hour.toString().padLeft(2, '0')}${existing.end.minute.toString().padLeft(2, '0')}' : '',
     );
+    final serviceController = TextEditingController(text: existing?.service ?? '');
 
     final result = await showDialog<String>(
       context: context,
       builder: (_) {
         return AlertDialog(
-          title: Text(existing == null ? '安排設計師 $designer 的顧客' : '編輯預約'),
+          title: Text(existing == null ? '$designer 設計師' : '編輯預約'),
           content: Column(
             mainAxisSize: MainAxisSize.min,
             children: [
@@ -228,12 +293,16 @@ class _CalendarPageState extends State<CalendarPage> {
                 decoration: const InputDecoration(labelText: '顧客名稱'),
               ),
               TextField(
+                controller: serviceController,
+                decoration: const InputDecoration(labelText: '服務項目'),
+              ),
+              TextField(
                 controller: startController,
-                decoration: const InputDecoration(labelText: '開始時間 (HH:mm)'),
+                decoration: const InputDecoration(labelText: '開始時間 (如 0900)'),
               ),
               TextField(
                 controller: endController,
-                decoration: const InputDecoration(labelText: '結束時間 (HH:mm)'),
+                decoration: const InputDecoration(labelText: '結束時間 (如 1230)'),
               ),
             ],
           ),
@@ -256,37 +325,49 @@ class _CalendarPageState extends State<CalendarPage> {
     if (result == 'save') {
       try {
         final name = nameController.text;
-        final startParts = startController.text.split(':');
-        final endParts = endController.text.split(':');
+        final service = serviceController.text;
+        final startStr = startController.text;
+        final endStr = endController.text;
 
-        final start = TimeOfDay(hour: int.parse(startParts[0]), minute: int.parse(startParts[1]));
-        final end = TimeOfDay(hour: int.parse(endParts[0]), minute: int.parse(endParts[1]));
+        final startHour = adjustHour(int.parse(startStr.substring(0, 2)));
+        final startMinute = int.parse(startStr.substring(2, 4));
+        final endHour = adjustHour(int.parse(endStr.substring(0, 2)));
+        final endMinute = int.parse(endStr.substring(2, 4));
+
+        final start = TimeOfDay(hour: startHour, minute: startMinute);
+        final end = TimeOfDay(hour: endHour, minute: endMinute);
 
         if (_timeToDouble(start) < 9 || _timeToDouble(end) > 19 || _timeToDouble(start) >= _timeToDouble(end)) {
           throw Exception();
         }
 
-        bool hasConflict = list.any((other) {
-          if (existing != null && identical(other, existing)) return false;
-          return other.designer == designer &&
-              !(_timeToDouble(end) <= _timeToDouble(other.start) || _timeToDouble(start) >= _timeToDouble(other.end));
-        });
+        // bool hasConflict = list.any((other) {
+        //   if (existing != null && identical(other, existing)) return false;
+        //   return other.designer == designer &&
+        //       !(_timeToDouble(end) <= _timeToDouble(other.start) || _timeToDouble(start) >= _timeToDouble(other.end));
+        // });
 
-        if (hasConflict) {
-          ScaffoldMessenger.of(context).showSnackBar(
-            const SnackBar(content: Text('該時段已有預約，請選擇其他時間')),
-          );
-          return;
-        }
+        // if (hasConflict) {
+        //   ScaffoldMessenger.of(context).showSnackBar(
+        //     const SnackBar(content: Text('該時段已有預約，請選擇其他時間')),
+        //   );
+        //   return;
+        // }
 
         setState(() {
           if (existing != null) list.remove(existing);
-          list.add(Appointment(start: start, end: end, customer: name, designer: designer));
+          list.add(Appointment(
+            start: start,
+            end: end,
+            customer: name,
+            designer: designer,
+            service: service,
+          ));
           dailyAppointments[key] = list;
         });
         await _saveAppointments(key);
-      } catch (_) {
-        ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text("請輸入正確時間格式 (09:00 ~ 19:00)")));
+      } catch (e) {
+        ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text("請輸入正確時間格式 (0900 ~ 0700)")));
       }
     } else if (result == 'delete' && existing != null) {
       setState(() {
@@ -295,6 +376,11 @@ class _CalendarPageState extends State<CalendarPage> {
       });
       await _saveAppointments(key);
     }
+  }
+
+  String _formattedHourLabel(int hour) {
+    final adjustedHour = hour % 12 == 0 ? 12 : hour % 12;
+    return '${adjustedHour.toString().padLeft(2, '0')}:00';
   }
 
   void _editDesigners() async {
@@ -333,6 +419,43 @@ class _CalendarPageState extends State<CalendarPage> {
     _appointmentSub?.cancel();
     super.dispose();
   }
+
+  Widget _buildAppointmentBox(Appointment a, double top, double height, double designerColumnWidth, double timeColumnWidth) {
+    return Positioned(
+      top: top,
+      left: timeColumnWidth + designers.indexOf(a.designer) * designerColumnWidth,
+      child: GestureDetector(
+        //onTap: () => _editAppointment(a.designer, existing: a),
+        //onTap: () => _onTapTimeSlot(a.start, a.designer),
+        onTapDown: (details) {
+          // 算出這個預約 box 的 tap Y 在全 Stack 的座標
+          double globalY = top + details.localPosition.dy;
+          // Stack 上面是 40 的 header
+          double tapHour = 9 + (globalY - 40) / 80; // 假設 hourHeight = 80
+          int hour = tapHour.floor();
+          int minute = ((tapHour - hour) * 60).round();
+          final tapTime = TimeOfDay(hour: hour, minute: minute);
+          _onTapTimeSlot(tapTime, a.designer);
+        },
+        child: Container(
+          width: designerColumnWidth,
+          height: height,
+          color: _getColorForCustomer(a.customer),
+          alignment: Alignment.center,
+          padding: const EdgeInsets.symmetric(horizontal: 4),
+          child: Column(
+            mainAxisAlignment: MainAxisAlignment.center,
+            children: [
+              Text(a.customer, style: const TextStyle(fontSize: 14, fontWeight: FontWeight.bold), textAlign: TextAlign.center),
+              Text(a.service, style: const TextStyle(fontSize: 12), textAlign: TextAlign.center),
+            ],
+          ),
+        ),
+      ),
+    );
+  }
+
+
 
   @override
   Widget build(BuildContext context) {
@@ -379,7 +502,7 @@ class _CalendarPageState extends State<CalendarPage> {
                         ),
                         ...List.generate((endHour - startHour).toInt(), (i) {
                           final hour = startHour + i;
-                          final timeLabel = '${hour.toInt().toString().padLeft(2, '0')}:00';
+                          final timeLabel =  _formattedHourLabel(hour.toInt());
                           return Container(
                             width: timeColumnWidth,
                             height: hourHeight,
@@ -391,53 +514,39 @@ class _CalendarPageState extends State<CalendarPage> {
                       ],
                     ),
                     ...designers.map((designer) {
-                      return GestureDetector(
-                        onTap: () => _editAppointment(designer),
-                        child: Column(
-                          children: [
-                            Container(
-                              width: designerColumnWidth,
-                              height: 40,
-                              alignment: Alignment.center,
-                              decoration: BoxDecoration(border: Border.all(color: Colors.grey)),
-                              child: Text(designer, style: const TextStyle(fontWeight: FontWeight.bold)),
-                            ),
-                            ...List.generate((endHour - startHour).toInt(), (_) {
-                              return Container(
+                      return Column(
+                        children: [
+                          Container(
+                            width: designerColumnWidth,
+                            height: 40,
+                            alignment: Alignment.center,
+                            decoration: BoxDecoration(border: Border.all(color: Colors.grey)),
+                            child: Text(designer, style: const TextStyle(fontWeight: FontWeight.bold)),
+                          ),
+                          ...List.generate((endHour - startHour).toInt() * 2, (i) {
+                            // 這裡每格 30 分鐘，i=0->09:00, i=1->09:30, ...
+                            final int hour = startHour.toInt() + (i ~/ 2);
+                            final int minute = (i % 2) * 30;
+                            final tapTime = TimeOfDay(hour: hour, minute: minute);
+                            return GestureDetector(
+                              onTap: () => _onTapTimeSlot(tapTime, designer),
+                              child: Container(
                                 width: designerColumnWidth,
-                                height: hourHeight,
+                                height: hourHeight / 2,
                                 decoration: BoxDecoration(border: Border.all(color: Colors.grey)),
-                              );
-                            }),
-                          ],
-                        ),
+                              ),
+                            );
+                          }),
+                        ],
                       );
                     })
                   ],
                 ),
               ),
               ...appointments.map((a) {
-                final left = timeColumnWidth + designers.indexOf(a.designer) * designerColumnWidth;
                 final top = 40 + (_timeToDouble(a.start) - startHour) * hourHeight;
                 final height = (_timeToDouble(a.end) - _timeToDouble(a.start)) * hourHeight;
-                return Positioned(
-                  top: top,
-                  left: left,
-                  child: GestureDetector(
-                    onTap: () => _editAppointment(a.designer, existing: a),
-                    child: Container(
-                      width: designerColumnWidth,
-                      height: height,
-                      color: Colors.lightBlueAccent.withOpacity(0.6),
-                      alignment: Alignment.center,
-                      child: Text(
-                        a.customer,
-                        textAlign: TextAlign.center,
-                        style: const TextStyle(fontSize: 14, fontWeight: FontWeight.bold),
-                      ),
-                    ),
-                  ),
-                );
+                return _buildAppointmentBox(a, top, height, designerColumnWidth, timeColumnWidth);
               })
             ],
           ),
