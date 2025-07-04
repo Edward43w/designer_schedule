@@ -3,6 +3,7 @@ import 'package:intl/intl.dart';
 import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:firebase_core/firebase_core.dart';
 import 'dart:async';
+import 'package:linked_scroll_controller/linked_scroll_controller.dart';
 
 void main() async {
   WidgetsFlutterBinding.ensureInitialized();
@@ -201,6 +202,7 @@ bool _isOverlap(Appointment a, Appointment b, double Function(TimeOfDay) timeToD
   return timeToDouble(a.start) < timeToDouble(b.end) && timeToDouble(a.end) > timeToDouble(b.start);
 }
 
+
 class CalendarPage extends StatefulWidget {
   const CalendarPage({super.key});
 
@@ -217,6 +219,15 @@ class _CalendarPageState extends State<CalendarPage> {
   late StreamSubscription<DocumentSnapshot> _designerSub;
   StreamSubscription<DocumentSnapshot>? _appointmentSub;
 
+  // ---------------- 新增：同步捲動用的控制器 ----------------
+  late final LinkedScrollControllerGroup _hGroup;
+  late final LinkedScrollControllerGroup _vGroup;
+  late final ScrollController _bodyH;
+  late final ScrollController _headerH;
+  late final ScrollController _bodyV;
+  late final ScrollController _timeV;
+  // --------------------------------------------------------
+  
   final List<Color> _customerColors = [
     Colors.lightBlueAccent,
     Colors.amber,
@@ -238,6 +249,15 @@ class _CalendarPageState extends State<CalendarPage> {
   @override
   void initState() {
     super.initState();
+    // ---------- 新增：初始化控制器 ----------
+    _hGroup  = LinkedScrollControllerGroup();
+    _vGroup  = LinkedScrollControllerGroup();
+    _bodyH   = _hGroup.addAndGet();
+    _headerH = _hGroup.addAndGet();
+    _bodyV   = _vGroup.addAndGet();
+    _timeV   = _vGroup.addAndGet();
+
+    // --------------------------------------
     _listenToDesignerUpdates();
     _listenToAppointmentUpdates();
   }
@@ -466,6 +486,10 @@ class _CalendarPageState extends State<CalendarPage> {
   void dispose() {
     _designerSub.cancel();
     _appointmentSub?.cancel();
+    _bodyH.dispose();
+    _headerH.dispose();
+    _bodyV.dispose();
+    _timeV.dispose();
     super.dispose();
   }
 
@@ -494,17 +518,121 @@ class _CalendarPageState extends State<CalendarPage> {
 
   @override
   Widget build(BuildContext context) {
-    const double hourHeight = 80.0;
-    const double startHour = 9.0;
-    const double endHour = 19.0;
-    const double timeColumnWidth = 60.0;
-    const double designerColumnWidth = 120.0;
+    // --- 常數 ---
+    const double hourHeight = 80;
+    const double startHour = 9;
+    const double endHour = 19;
+    const double timeColW = 60;
+    const double designerColW = 120;
+    const double headerH = 40;
 
-    final double contentHeight = (endHour - startHour) * hourHeight;
-    final double contentWidth = designerColumnWidth * designers.length;
     final String key = DateFormat('yyyy-MM-dd').format(selectedDate);
-    final appointments = dailyAppointments[key] ?? [];
+    final apps = dailyAppointments[key] ?? [];
 
+    final double contentW = designerColW * designers.length;
+    final double contentH = (endHour - startHour) * hourHeight;
+
+    // ------- 頂端設計師列 -------
+    Widget header() => SizedBox(
+          height: headerH,
+          child: SingleChildScrollView(
+            controller: _headerH,
+            scrollDirection: Axis.horizontal,
+            child: Row(
+              children: designers
+                  .map((d) => Container(
+                        width: designerColW,
+                        height: headerH,
+                        alignment: Alignment.center,
+                        decoration:
+                            BoxDecoration(border: Border.all(color: Colors.grey)),
+                        child:
+                            Text(d, style: const TextStyle(fontWeight: FontWeight.bold)),
+                      ))
+                  .toList(),
+            ),
+          ),
+        );
+
+    // ------- 左側時間欄 -------
+    Widget timeColumn() => SizedBox(
+      width: timeColW,
+      child: SingleChildScrollView(
+        controller: _timeV,
+        child: Column(
+          children: List.generate((endHour - startHour).toInt(), (i) {
+            final h = (startHour + i).toInt();
+            return Container(
+              height: hourHeight,
+              alignment: Alignment.center,
+              decoration: BoxDecoration(border: Border.all(color: Colors.grey)),
+              child: Text(_formattedHourLabel(h)),
+            );
+          }),
+        ),
+      ),
+    );
+
+    // ------- 主體排程格 -------
+    Widget scheduleBody() {
+      // 背景 half-hour cells
+      final List<Widget> bgCells = [];
+      for (int d = 0; d < designers.length; d++) {
+        for (int i = 0; i < (endHour - startHour) * 2; i++) {
+          final hour = startHour.toInt() + (i ~/ 2);
+          final minute = (i % 2) * 30;
+          final tapTime = TimeOfDay(hour: hour, minute: minute);
+          bgCells.add(Positioned(
+            left: d * designerColW,
+            top: i * (hourHeight / 2),
+            child: GestureDetector(
+              onTap: () => _onTapTimeSlot(tapTime, designers[d]),
+              child: Container(
+                width: designerColW,
+                height: hourHeight / 2,
+                decoration:
+                    BoxDecoration(border: Border.all(color: Colors.grey)),
+              ),
+            ),
+          ));
+        }
+      }
+
+      // 預約方塊
+      final boxes = designers.asMap().entries.expand((entry) {
+        final dIdx = entry.key;
+        final dName = entry.value;
+        final layouts = layoutAppointments(
+            apps.where((a) => a.designer == dName).toList(), _timeToDouble);
+        return layouts.map((l) {
+          final a = l.appointment;
+          final boxW = designerColW / l.columnCount;
+          final left = dIdx * designerColW + l.column * boxW;
+          final top = (_timeToDouble(a.start) - startHour) * hourHeight;
+          final boxH =
+              (_timeToDouble(a.end) - _timeToDouble(a.start)) * hourHeight;
+          return Positioned(
+              left: left,
+              top: top,
+              child: _buildAppointmentBox(a, boxW, boxH, top));
+        });
+      }).toList();
+
+      return SingleChildScrollView(
+        controller: _bodyH,
+        scrollDirection: Axis.horizontal,
+        child: SingleChildScrollView(
+          controller: _bodyV,
+          child: SizedBox(
+            width: contentW,
+            height: contentH,
+            child: Stack(children: [...bgCells, ...boxes]),
+          ),
+        ),
+      );
+    }
+
+    // ------- Scaffold -------
     return Scaffold(
       appBar: AppBar(
         title: Text(DateFormat('yyyy/MM/dd').format(selectedDate)),
@@ -514,94 +642,34 @@ class _CalendarPageState extends State<CalendarPage> {
           IconButton(onPressed: _editDesigners, icon: const Icon(Icons.edit)),
         ],
       ),
-      body: InteractiveViewer(
-        constrained: false,
-        minScale: 0.5,
-        maxScale: 2.5,
-        child: SizedBox(
-          width: timeColumnWidth + contentWidth,
-          height: contentHeight + 40,
-          child: Stack(
-            children: [
-              Positioned.fill(
-                child: Row(
-                  children: [
-                    Column(
-                      children: [
-                        Container(
-                          width: timeColumnWidth,
-                          height: 40,
-                          decoration: BoxDecoration(border: Border.all(color: Colors.grey)),
-                          alignment: Alignment.center,
-                          child: const Text('時間', style: TextStyle(fontWeight: FontWeight.bold)),
-                        ),
-                        ...List.generate((endHour - startHour).toInt(), (i) {
-                          final hour = startHour + i;
-                          final timeLabel =  _formattedHourLabel(hour.toInt());
-                          return Container(
-                            width: timeColumnWidth,
-                            height: hourHeight,
-                            alignment: Alignment.center,
-                            decoration: BoxDecoration(border: Border.all(color: Colors.grey)),
-                            child: Text(timeLabel),
-                          );
-                        })
-                      ],
-                    ),
-                    ...designers.map((designer) {
-                      return Column(
-                        children: [
-                          Container(
-                            width: designerColumnWidth,
-                            height: 40,
-                            alignment: Alignment.center,
-                            decoration: BoxDecoration(border: Border.all(color: Colors.grey)),
-                            child: Text(designer, style: const TextStyle(fontWeight: FontWeight.bold)),
-                          ),
-                          ...List.generate((endHour - startHour).toInt() * 2, (i) {
-                            final int hour = startHour.toInt() + (i ~/ 2);
-                            final int minute = (i % 2) * 30;
-                            final tapTime = TimeOfDay(hour: hour, minute: minute);
-                            return GestureDetector(
-                              onTap: () => _onTapTimeSlot(tapTime, designer),
-                              child: Container(
-                                width: designerColumnWidth,
-                                height: hourHeight / 2,
-                                decoration: BoxDecoration(border: Border.all(color: Colors.grey)),
-                              ),
-                            );
-                          }),
-                        ],
-                      );
-                    })
-                  ],
-                ),
-              ),
-              // ---- 這裡改成左右平鋪重疊預約 ----
-              ...designers.asMap().entries.expand((entry) {
-                final designerIndex = entry.key;
-                final designer = entry.value;
-                final designerAppointments = appointments.where((a) => a.designer == designer).toList();
-                final layouts = layoutAppointments(designerAppointments, _timeToDouble);
-                return layouts.map((layout) {
-                  final a = layout.appointment;
-                  final column = layout.column;
-                  final columnCount = layout.columnCount;
-                  final width = designerColumnWidth / columnCount;
-                  final left = timeColumnWidth + designerIndex * designerColumnWidth + column * width;
-                  final top = 40 + (_timeToDouble(a.start) - startHour) * hourHeight;
-                  final height = (_timeToDouble(a.end) - _timeToDouble(a.start)) * hourHeight;
-                  return Positioned(
-                    top: top,
-                    left: left,
-                    child: _buildAppointmentBox(a, width, height, top),
-                  );
-                });
-              }),
-            ],
+      body: Stack(
+        children: [
+          // 左上交叉
+          Positioned(
+            left: 0,
+            top: 0,
+            child: Container(
+              width: timeColW,
+              height: headerH,
+              alignment: Alignment.center,
+              decoration: BoxDecoration(border: Border.all(color: Colors.grey)),
+              child: const Text('時間', style: TextStyle(fontWeight: FontWeight.bold)),
+            ),
           ),
-        ),
+          // 頂端 header
+          Positioned(left: timeColW, top: 0, right: 0, child: header()),
+          // 左側時間欄
+          Positioned(left: 0, top: headerH, bottom: 0, child: timeColumn()),
+          // 主體
+          Positioned(
+              left: timeColW,
+              top: headerH,
+              right: 0,
+              bottom: 0,
+              child: scheduleBody()),
+        ],
       ),
     );
   }
+
 }
