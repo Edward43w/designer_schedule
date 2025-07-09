@@ -8,11 +8,9 @@ A Flutter scheduling app for managing daily appointments of multiple designers.
 - Interactive daily schedule from **09:00 to 19:00**
 - Tap empty space to **add appointment**
 - Tap existing appointment to **edit or delete**
-- Prevents **overlapping appointments** for the same designer
+- Provides **overlapping appointments** for the same designer
 - Appointments are **stored separately per day**
 - **Edit designer list**: Add/remove designers dynamically
-- **InteractiveViewer** support: pinch-to-zoom and drag to scroll
-- In-memory data structure (data will reset when app closes)
 
 ## Structure
 
